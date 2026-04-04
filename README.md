@@ -30,7 +30,7 @@ The system works in three steps:
 ## Prerequisites
 
 - Rust 1.75+ and Cargo
-- Google Chrome (for the extension)
+- Google Chrome, Brave, or any Chromium supported browser (for the extension)
 
 ## Quick Start
 
@@ -150,7 +150,6 @@ verifier submit --proof proof.json --platform x --username handle
 
 - **Cryptographic verification**: Every proof is verified against the Zcash blockchain. You cannot fake a proof without the wallet's private key.
 - **Challenge binding**: Each proof is bound to a specific `platform:username` pair. Proofs cannot be reused across different identities.
-- **Rate limiting**: The server limits registrations to 1 per address per hour.
 - **Expiry**: Badges expire after 30 days and must be renewed.
 - **Your keys stay local**: The CLI generates proofs locally. Your seed phrase is never sent to the server.
 
