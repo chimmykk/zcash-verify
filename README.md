@@ -2,6 +2,17 @@
 
 Cryptographic proof-of-balance verification for Zcash. Users prove ownership of a Zcash wallet and register verified balance badges on social platforms (X, Zcash Forum, Bluesky). A Chrome extension displays these badges next to usernames.
 
+## Showcase
+
+<p align="center">
+  <img src="https://github.com/chimmykk/zcash-verify/raw/main/showcase-example/showcase_1.png" width="45%" style="margin: 5px;" alt="Showcase 1" />
+  <img src="https://github.com/chimmykk/zcash-verify/raw/main/showcase-example/showcase_2.png" width="45%" style="margin: 5px;" alt="Showcase 2" />
+</p>
+<p align="center">
+  <img src="https://github.com/chimmykk/zcash-verify/raw/main/showcase-example/showcase_3.png" width="45%" style="margin: 5px;" alt="Showcase 3" />
+  <img src="https://github.com/chimmykk/zcash-verify/raw/main/showcase-example/showcase_4.png" width="45%" style="margin: 5px;" alt="Showcase 4" />
+</p>
+
 ## Architecture
 
 ```
