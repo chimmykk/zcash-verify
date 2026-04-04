@@ -1,0 +1,19 @@
+
+{
+  "version": 1,
+  "proof_type": "orchard",
+  "network": "main",
+  "badge_tier": 0,
+  "address": "fb2008ce42b6902c8d80c44861cff4fdbb20775b0dfbc1d45a340f95e431d7aaa8d25409651cb6a785602a",
+  "balance_zat": 4125401,
+  "block_height": 3296191,
+  "timestamp": "2026-04-04T11:40:20.957285+00:00",
+  "expires": "2026-05-04T11:40:20.957296+00:00",
+  "challenge": "",
+  "proof_data": {
+    "signature": "2071bdf6d8f524cb82121b471946f89726a544d543caf81b771dd86a9d39290c",
+    "fvk": "e9a784c523671922fd8e1794ac5f82254d0080185d88b495f74897bcfcd28c2fde89233ffabb434f306637bc2efb2431ae3a42db2b36f8de97914330688f140797a9e7c08824ed20d6d270ee4ccb33b711341b247ca65afa6e68ca37dfeba713"
+  }
+}
+
+

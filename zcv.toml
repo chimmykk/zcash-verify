@@ -1,5 +1,0 @@
-cometrpc_port = 26657
-cometbft_port = 26658
-grpc_port = 9010
-db_path = "vote.db"
-lwd_url = "https://zec.rocks"
