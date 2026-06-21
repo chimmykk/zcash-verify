@@ -1,4 +1,4 @@
-# ZcashVerify
+# ZcashBadge
 
 Cryptographic proof-of-balance verification for Zcash. Users prove ownership of a Zcash wallet and register verified balance badges on social platforms (X, Zcash Forum, Bluesky). A Chrome extension displays these badges next to usernames.
 
@@ -18,18 +18,20 @@ Cryptographic proof-of-balance verification for Zcash. Users prove ownership of 
 ```
 verifier/         CLI tool — generates cryptographic proofs and submits them
 badge-server/     HTTP API — verifies proofs, stores badges in SQLite
+web/              Next.js app — web UI to generate proofs and register badges
 extension/        Chrome Extension (MV3) — injects badges on supported platforms
 ```
 
 The system works in three steps:
 
-1. The CLI scans the Zcash blockchain, generates a signed proof binding your balance to your social identity.
-2. The proof is submitted to the badge server, which cryptographically verifies it and stores the result.
+1. The web app (or CLI) scans the Zcash blockchain, generates a signed proof binding your balance to your social identity, and stores it in the badge server database.
+2. The badge server cryptographically verifies proofs and stores badge metadata in SQLite.
 3. The Chrome extension queries the server and displays a badge next to your username on supported platforms.
 
 ## Prerequisites
 
 - Rust 1.75+ and Cargo
+- Node.js 18+ and npm (for the web app)
 - Google Chrome, Brave, or any Chromium supported browser (for the extension)
 
 ## Quick Start
@@ -40,11 +42,12 @@ The system works in three steps:
 cargo build --release
 ```
 
-### 2. Manage the Badge Server
+### 2. Start the Badge Server
 
 We provide several convenient bash scripts in the root directory to manage the backend:
 
 - **`./start_server.sh`**: Starts the `badge-server` backend dynamically on `http://localhost:3000`.
+- **`./start_web.sh`**: Starts the Next.js web app on `http://localhost:3001`.
 - **`./kill_server.sh`**: Safely finds and forcefully terminates the background badge server.
 - **`./clean.sh`**: Stops the server and wipes `badges.db` clean to reset all registrations.
 
@@ -52,30 +55,34 @@ Start your server to begin:
 
 ```bash
 ./start_server.sh
+./start_web.sh
 ```
 
-### 3. Generate a Zcash Proof
+### 3. Register Your Badge (Web App — Recommended)
 
-You have two workflows to generate your Zcash ownership proof using our helper scripts:
+Open **http://localhost:3001** and follow the wizard:
 
-#### Option A: Extension / UI Flow (Recommended)
+1. Enter your seed phrase and scan start height
+2. Add your social handles (X, Bluesky, Zcash Forum)
+3. Click **Generate & register badges**
 
-Use **`./prove_basic.sh`** to generate a generic offline proof.
-This script extracts your seed, scans your Orchard balance, and saves the cryptographic receipt to `zcash_prove.json`. Because the challenge verification is relaxed for generic files, you can then open the **Chrome Extension > Submit Proof**, upload the file, and interactively type your social handle to dynamically link your identity!
+Your proof is verified and saved to the database automatically. No JSON upload required.
 
-#### Option B: Automated CLI Flow
+Then open the Chrome extension → **Settings** → add your usernames under **My identities** → **Save & Refresh Badges**.
+
+### 4. Register via CLI (Alternative)
 
 Use **`./prove_social.sh`** to automatically generate the proof _and_ explicitly register it across multiple platforms simultaneously.
 Edit the script to include your specific handles (e.g., `--x your_handle --bluesky your_handle`), and the CLI will securely submit it straight to the backend server and save a local backup to `zcashprovewithsocial.json`.
 
 _(Note: Ensure your `--start-height` in the bash scripts is set to a block right before your wallet was funded so the scanner successfully calculates your balance!)_
 
-### 4. Install the Chrome Extension
+### 5. Install the Chrome Extension
 
 1. Open Chrome and navigate to `chrome://extensions`
 2. Enable "Developer mode" (toggle in the top right)
 3. Click "Load unpacked" and select the `extension/` directory
-4. The ZcashVerify icon will appear in your toolbar
+4. The ZcashBadge icon will appear in your toolbar
 
 The extension will automatically dynamically inject badges directly into X (Twitter), Bluesky, and Zcash Forum timelines.
 

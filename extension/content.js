@@ -24,6 +24,28 @@
   const platform = detectPlatform();
   if (!platform) return;
 
+  function normalizeUsername(username) {
+    const u = String(username || "")
+      .trim()
+      .replace(/^@/, "")
+      .toLowerCase();
+    if (!u) return u;
+    if (platform === "bluesky" && !u.includes(".") && !u.startsWith("did:")) {
+      return `${u}.bsky.social`;
+    }
+    return u;
+  }
+
+  function badgeLookupKeys(username) {
+    const keys = new Set();
+    const raw = normalizeUsername(username);
+    keys.add(raw);
+    if (platform === "bluesky" && raw.includes(".")) {
+      keys.add(raw.split(".")[0]);
+    }
+    return keys;
+  }
+
   console.log(`[ZcashBadge] Active on platform: ${platform}`);
 
   // ── Username Extraction Per Platform ──
@@ -57,8 +79,8 @@
             // 2. Handle links (tweet headers, mentions)
             const href = el.getAttribute("href");
             if (href && href.startsWith("/") && !href.includes("/", 1)) {
-              const username = href.substring(1).replace("@", "").toLowerCase();
-              if (!username) return;
+            const username = href.substring(1).replace("@", "").toLowerCase();
+            if (!username || username.includes("/")) return;
 
               // De-duplicate by the parent header if it exists
               const container = el.closest('[data-testid="User-Name"], [data-testid="UserName"]') || el;
@@ -105,46 +127,42 @@
       }
 
       case "bluesky": {
-        // Bluesky — match @handle links in posts, skip sidebar/nav
         const seenBsky = new Set();
-        document
-          .querySelectorAll('a[href*="/profile/"]')
-          .forEach((el) => {
-            // Skip nav/sidebar links (they have role="link" in nav, or are inside nav-like containers)
-            if (el.closest('nav, [data-testid="sidebarNav"], [role="navigation"]')) return;
-            // Only match links whose text looks like a handle (@something)
-            const text = el.textContent.trim();
-            const href = el.getAttribute("href") || "";
-            const match = href.match(/\/profile\/([^/?#]+)/);
-            if (!match) return;
-            const username = match[1].replace("@", "").toLowerCase();
-            // Skip if it's a generic nav link (text is "Profile", "Home", etc.)
-            if (!text.includes("@") && !text.includes(".") && !text.toLowerCase().includes(username.toLowerCase())) return;
-            if (
-              !seenBsky.has(username) &&
-              !el.closest(`[${BADGE_ATTR}]`) &&
-              !el.querySelector(".zcash-badge-icon")
-            ) {
-              seenBsky.add(username);
-              results.push({ element: el, username });
-            }
-          });
 
-        // Add back profile page top handler for Bluesky
-        document
-          .querySelectorAll('[data-testid="profileHeaderDisplayName"]')
-          .forEach((el) => {
-            const handleEl = el
-              .closest("[data-testid]")
-              ?.querySelector('[data-testid="profileHeaderHandle"]');
-            if (handleEl && !handleEl.closest(`[${BADGE_ATTR}]`) && !handleEl.querySelector(".zcash-badge-icon")) {
-              const username = handleEl.textContent.trim().replace("@", "").toLowerCase();
-              if (username && !seenBsky.has(username)) {
-                seenBsky.add(username);
-                results.push({ element: handleEl, username });
-              }
-            }
-          });
+        function addBlueskyUser(element, username) {
+          const normalized = normalizeUsername(username);
+          if (!normalized || seenBsky.has(normalized)) return;
+          if (element.closest(`[${BADGE_ATTR}]`)) return;
+          if (element.querySelector(".zcash-badge-icon")) return;
+          seenBsky.add(normalized);
+          results.push({ element, username: normalized });
+        }
+
+        document.querySelectorAll('a[href*="/profile/"]').forEach((el) => {
+          if (el.closest('nav, [data-testid="sidebarNav"], [role="navigation"]')) return;
+
+          const text = el.textContent.trim();
+          const href = el.getAttribute("href") || "";
+
+          if (text.startsWith("@")) {
+            addBlueskyUser(el, text);
+            return;
+          }
+
+          const match = href.match(/\/profile\/([^/?#]+)/);
+          if (!match) return;
+          const slug = match[1].replace("@", "").toLowerCase();
+          if (slug.startsWith("did:")) return;
+          addBlueskyUser(el, slug);
+        });
+
+        document.querySelectorAll('[data-testid="profileHeaderHandle"]').forEach((el) => {
+          addBlueskyUser(el, el.textContent.trim());
+        });
+
+        document.querySelectorAll('[data-testid="postAuthorHandle"]').forEach((el) => {
+          addBlueskyUser(el, el.textContent.trim());
+        });
         break;
       }
     }
@@ -179,6 +197,7 @@
       globalTooltip.innerHTML = `
         <strong>Zcash Verified</strong><br/>
         <span class="zcash-badge-tier">${badge.badge_name}</span><br/>
+        <span class="zcash-badge-user">${badge.platform}:${badge.username}</span><br/>
         <span class="zcash-badge-expires">Expires: ${new Date(badge.expires_at).toLocaleDateString()}</span>
       `;
       globalTooltip.style.display = "block";
@@ -235,16 +254,23 @@
             
             if (!response || !response.badges) return;
 
-            // Build lookup map
+            // Build lookup map with handle aliases (e.g. bluesky short handle)
             const badgeMap = new Map();
             for (const b of response.badges) {
-              badgeMap.set(b.username.toLowerCase(), b);
+              for (const key of badgeLookupKeys(b.username)) {
+                badgeMap.set(key, b);
+              }
             }
 
             // Re-scan and inject
             const elements = extractUserElements();
             for (const { element, username } of elements) {
-              const badge = badgeMap.get(username);
+              const keys = badgeLookupKeys(username);
+              let badge = null;
+              for (const key of keys) {
+                badge = badgeMap.get(key);
+                if (badge) break;
+              }
               if (badge) {
                 injectBadge(element, badge);
               }
@@ -294,6 +320,13 @@
 
   // Periodic rescan as fallback
   setInterval(scanPage, SCAN_INTERVAL);
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message.type === "RESCAN_BADGES") {
+      pendingUsernames.clear();
+      scanPage();
+    }
+  });
 
   console.log("[ZcashBadge] Content script initialized");
 })();

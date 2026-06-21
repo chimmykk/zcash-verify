@@ -281,6 +281,25 @@ pub async fn scan_orchard_balance_from_seed(
     Ok((balance, address_hex, chain_height))
 }
 
+/// Encode raw Orchard address bytes (hex) as a unified address string.
+pub fn encode_unified_address(hex_addr: &str, network: &str) -> Option<String> {
+    let addr_bytes = hex::decode(hex_addr).ok()?;
+    if addr_bytes.len() != 43 {
+        return None;
+    }
+    let mut raw = [0u8; 43];
+    raw.copy_from_slice(&addr_bytes);
+    use zcash_address::unified::{self, Encoding};
+    let items = vec![unified::Receiver::Orchard(raw)];
+    let ua = unified::Address::try_from_items(items).ok()?;
+    let net = if network == "main" {
+        zcash_protocol::consensus::NetworkType::Main
+    } else {
+        zcash_protocol::consensus::NetworkType::Test
+    };
+    Some(ua.encode(&net))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "ZcashVerify",
+  "name": "ZcashBadge",
   "description": "Cryptographic proof-of-balance badges for Zcash on social platforms",
-  "version": "1.0.0",
-  "permissions": ["storage"],
+  "version": "1.2.0",
+  "permissions": ["storage", "tabs"],
   "host_permissions": [
-    "http://localhost:3000/*"
+    "http://localhost:3000/*",
+    "http://localhost:3001/*"
   ],
   "icons": {
     "48": "icons/badges/badge_holder.png",
@@ -18,6 +19,13 @@
     }
   },
   "content_scripts": [
+    {
+      "matches": [
+        "http://localhost:3001/*"
+      ],
+      "js": ["sync.js"],
+      "run_at": "document_idle"
+    },
     {
       "matches": [
         "https://x.com/*",

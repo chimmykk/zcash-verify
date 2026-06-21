@@ -54,60 +54,113 @@ struct BadgesQuery {
     usernames: String,
 }
 
-// ── Handlers ──────────────────────────────────────────
+/// Request to generate proofs and register badges (web app flow)
+#[derive(Debug, Deserialize)]
+struct RegisterRequest {
+    seed: String,
+    #[serde(default)]
+    account: u32,
+    start_height: Option<u64>,
+    #[serde(default = "default_network")]
+    network: String,
+    x: Option<String>,
+    zcashforum: Option<String>,
+    bluesky: Option<String>,
+}
 
-/// POST /api/verify — Submit and verify a proof
-async fn verify_proof(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<VerifyRequest>,
-) -> (StatusCode, Json<VerifyResponse>) {
-    let proof = &req.proof;
+fn default_network() -> String {
+    "main".to_string()
+}
 
-    // No rate limiting per user request
+/// Response after generating and registering badges
+#[derive(Debug, Serialize)]
+struct RegisterResponse {
+    success: bool,
+    message: String,
+    badges: Vec<BadgeResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    balance_zat: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    badge_tier: Option<String>,
+}
 
-    // ── Validate platform ──
-    let valid_platforms = ["x", "bluesky", "zcashforum"];
-    if !valid_platforms.contains(&req.platform.as_str()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(VerifyResponse {
-                success: false,
-                message: format!("Invalid platform '{}'. Valid: {:?}", req.platform, valid_platforms),
-                badge: None,
-            }),
-        );
+/// Request to scan balance without registering
+#[derive(Debug, Deserialize)]
+struct ScanRequest {
+    seed: String,
+    #[serde(default)]
+    account: u32,
+    start_height: Option<u64>,
+    #[serde(default = "default_network")]
+    network: String,
+}
+
+/// Response from balance scan
+#[derive(Debug, Serialize)]
+struct ScanResponse {
+    success: bool,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    balance_zat: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    balance_zec: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    badge_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    badge_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    block_height: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<String>,
+}
+
+fn default_lwd_url(network: &str) -> String {
+    match network {
+        "main" => "https://zec.rocks:443".to_string(),
+        _ => "https://testnet.zec.rocks:443".to_string(),
     }
+}
 
-    // ── Challenge binding ──
-    let expected_challenge = format!("{}:{}", req.platform, req.username);
+fn normalize_username(username: &str) -> String {
+    username.replace('@', "").to_lowercase()
+}
+
+fn valid_platforms() -> [&'static str; 3] {
+    ["x", "bluesky", "zcashforum"]
+}
+
+fn validate_platform(platform: &str) -> Result<(), String> {
+    if valid_platforms().contains(&platform) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Invalid platform '{}'. Valid: {:?}",
+            platform,
+            valid_platforms()
+        ))
+    }
+}
+
+async fn verify_and_store(
+    db: &SqlitePool,
+    proof: &zcash_verifier::OwnershipProof,
+    platform: &str,
+    username: &str,
+) -> Result<BadgeResponse, String> {
+    validate_platform(platform)?;
+
+    let expected_challenge = format!("{}:{}", platform, username);
     if !proof.challenge.is_empty() && proof.challenge != expected_challenge {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(VerifyResponse {
-                success: false,
-                message: format!(
-                    "Challenge mismatch: proof has '{}' but expected '{}'",
-                    proof.challenge, expected_challenge
-                ),
-                badge: None,
-            }),
-        );
+        return Err(format!(
+            "Challenge mismatch: proof has '{}' but expected '{}'",
+            proof.challenge, expected_challenge
+        ));
     }
 
-    // ── Cryptographic verification ──
     let result = match proof.proof_type.as_str() {
         "transparent" => zcash_verifier::transparent::verify_transparent(proof),
         "orchard" => zcash_verifier::orchard_proof::verify_orchard(proof),
-        other => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(VerifyResponse {
-                    success: false,
-                    message: format!("Unknown proof type: {}", other),
-                    badge: None,
-                }),
-            );
-        }
+        other => return Err(format!("Unknown proof type: {}", other)),
     };
 
     match result {
@@ -117,8 +170,8 @@ async fn verify_proof(
             );
 
             let badge = BadgeResponse {
-                platform: req.platform.clone(),
-                username: req.username.clone(),
+                platform: platform.to_string(),
+                username: username.to_string(),
                 badge_tier: tier.level(),
                 badge_name: tier.to_string(),
                 badge_image: tier.image_filename().to_string(),
@@ -127,10 +180,10 @@ async fn verify_proof(
             };
 
             let proof_json = serde_json::to_string(proof).unwrap_or_default();
-            if let Err(e) = db::upsert_badge(
-                &state.db,
-                &req.platform,
-                &req.username,
+            db::upsert_badge(
+                db,
+                platform,
+                username,
                 tier.level(),
                 &tier.to_string(),
                 tier.image_filename(),
@@ -142,23 +195,35 @@ async fn verify_proof(
                 &proof_json,
             )
             .await
-            {
-                tracing::error!("DB error: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(VerifyResponse {
-                        success: false,
-                        message: format!("Database error: {}", e),
-                        badge: None,
-                    }),
-                );
-            }
+            .map_err(|e| format!("Database error: {}", e))?;
 
             tracing::info!(
                 "✅ Badge verified: {}:{} → {} ({})",
-                req.platform, req.username, tier, tier.emoji()
+                platform,
+                username,
+                tier,
+                tier.emoji()
             );
 
+            Ok(badge)
+        }
+        Ok(vr) => Err(format!("Proof invalid: {}", vr.message)),
+        Err(e) => Err(format!("Verification error: {}", e)),
+    }
+}
+
+// ── Handlers ──────────────────────────────────────────
+
+/// POST /api/verify — Submit and verify a proof
+async fn verify_proof(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<VerifyRequest>,
+) -> (StatusCode, Json<VerifyResponse>) {
+    let proof = &req.proof;
+
+    match verify_and_store(&state.db, proof, &req.platform, &req.username).await {
+        Ok(badge) => {
+            let tier = badge.badge_name.clone();
             (
                 StatusCode::OK,
                 Json(VerifyResponse {
@@ -168,20 +233,209 @@ async fn verify_proof(
                 }),
             )
         }
-        Ok(vr) => (
+        Err(message) => (
             StatusCode::BAD_REQUEST,
             Json(VerifyResponse {
                 success: false,
-                message: format!("Proof invalid: {}", vr.message),
+                message,
                 badge: None,
             }),
         ),
+    }
+}
+
+/// POST /api/register — Generate proofs and register badges for social identities
+async fn register_badges(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RegisterRequest>,
+) -> (StatusCode, Json<RegisterResponse>) {
+    let lwd_url = default_lwd_url(&req.network);
+    let mut platforms: Vec<(&str, String)> = Vec::new();
+
+    if let Some(u) = req.x.as_deref().filter(|s| !s.trim().is_empty()) {
+        platforms.push(("x", normalize_username(u)));
+    }
+    if let Some(u) = req.zcashforum.as_deref().filter(|s| !s.trim().is_empty()) {
+        platforms.push(("zcashforum", normalize_username(u)));
+    }
+    if let Some(u) = req.bluesky.as_deref().filter(|s| !s.trim().is_empty()) {
+        platforms.push(("bluesky", normalize_username(u)));
+    }
+
+    if platforms.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(RegisterResponse {
+                success: false,
+                message: "Provide at least one social username (x, zcashforum, or bluesky).".into(),
+                badges: vec![],
+                balance_zat: None,
+                badge_tier: None,
+            }),
+        );
+    }
+
+    tracing::info!(
+        "Generating proofs for platforms: {}",
+        platforms
+            .iter()
+            .map(|(p, u)| format!("{}:{}", p, u))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let base_challenge = platforms
+        .iter()
+        .map(|(p, u)| format!("{}:{}", p, u))
+        .collect::<Vec<_>>()
+        .join("|");
+
+    let base_proof = match zcash_verifier::orchard_proof::prove_orchard(
+        &req.seed,
+        req.account,
+        &lwd_url,
+        &base_challenge,
+        req.start_height,
+        &req.network,
+    )
+    .await
+    {
+        Ok(proof) => proof,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RegisterResponse {
+                    success: false,
+                    message: format!("Proof generation failed: {}", e),
+                    badges: vec![],
+                    balance_zat: None,
+                    badge_tier: None,
+                }),
+            );
+        }
+    };
+
+    let balance_zat = base_proof.balance_zat;
+    let tier = zcash_verifier::BadgeTier::from_balance(
+        base_proof.badge_tier * zcash_verifier::badge::ZAT_PER_ZEC,
+    );
+    let tier_name = tier.to_string();
+
+    let mut badges = Vec::new();
+    let mut errors = Vec::new();
+
+    for (platform, username) in &platforms {
+        let challenge = format!("{}:{}", platform, username);
+        let mut proof = match zcash_verifier::orchard_proof::prove_orchard(
+            &req.seed,
+            req.account,
+            &lwd_url,
+            &challenge,
+            req.start_height,
+            &req.network,
+        )
+        .await
+        {
+            Ok(proof) => proof,
+            Err(e) => {
+                errors.push(format!("{}:{} — {}", platform, username, e));
+                continue;
+            }
+        };
+
+        proof.platform = Some(platform.to_string());
+        proof.username = Some(username.clone());
+
+        match verify_and_store(&state.db, &proof, platform, username).await {
+            Ok(badge) => badges.push(badge),
+            Err(e) => errors.push(format!("{}:{} — {}", platform, username, e)),
+        }
+    }
+
+    if badges.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(RegisterResponse {
+                success: false,
+                message: errors.join("; "),
+                badges,
+                balance_zat,
+                badge_tier: Some(tier_name),
+            }),
+        );
+    }
+
+    let message = if errors.is_empty() {
+        format!(
+            "Registered {} badge(s). Install the Chrome extension to see them on social platforms.",
+            badges.len()
+        )
+    } else {
+        format!(
+            "Registered {} badge(s). Some platforms failed: {}",
+            badges.len(),
+            errors.join("; ")
+        )
+    };
+
+    (
+        StatusCode::OK,
+        Json(RegisterResponse {
+            success: true,
+            message,
+            badges,
+            balance_zat,
+            badge_tier: Some(tier_name),
+        }),
+    )
+}
+
+/// POST /api/scan — Scan Orchard balance without registering
+async fn scan_balance(Json(req): Json<ScanRequest>) -> (StatusCode, Json<ScanResponse>) {
+    let lwd_url = default_lwd_url(&req.network);
+
+    match zcash_verifier::orchard_proof::scan_orchard_balance_from_seed(
+        &req.seed,
+        req.account,
+        &lwd_url,
+        req.start_height,
+        &req.network,
+    )
+    .await
+    {
+        Ok((balance, address_hex, height)) => {
+            let tier = zcash_verifier::BadgeTier::from_balance(balance);
+            let balance_zec = format!("{:.8} ZEC", balance as f64 / 100_000_000.0);
+            let address = zcash_verifier::orchard_proof::encode_unified_address(
+                &address_hex,
+                &req.network,
+            )
+            .or_else(|| Some(address_hex));
+            (
+                StatusCode::OK,
+                Json(ScanResponse {
+                    success: true,
+                    message: "Balance scan complete".into(),
+                    balance_zat: Some(balance),
+                    balance_zec: Some(balance_zec),
+                    badge_tier: Some(tier.to_string()),
+                    badge_name: Some(tier.to_string()),
+                    block_height: Some(height),
+                    address,
+                }),
+            )
+        }
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(VerifyResponse {
+            Json(ScanResponse {
                 success: false,
-                message: format!("Verification error: {}", e),
-                badge: None,
+                message: format!("Scan failed: {}", e),
+                balance_zat: None,
+                balance_zec: None,
+                badge_tier: None,
+                badge_name: None,
+                block_height: None,
+                address: None,
             }),
         ),
     }
@@ -242,6 +496,8 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/api/verify", post(verify_proof))
+        .route("/api/register", post(register_badges))
+        .route("/api/scan", post(scan_balance))
         .route("/api/badges", get(get_badges))
         .route("/api/badge/{platform}/{username}", get(get_badge))
         .route("/api/health", get(health))
@@ -254,6 +510,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(" Rate limiting is disabled");
     tracing::info!(" Endpoints:");
     tracing::info!("   POST /api/verify      — Submit proof");
+    tracing::info!("   POST /api/register    — Generate + register badges");
+    tracing::info!("   POST /api/scan        — Scan balance only");
     tracing::info!("   GET  /api/badges      — Batch lookup");
     tracing::info!("   GET  /api/badge/:p/:u  — Single lookup");
 

@@ -18,6 +18,10 @@ ehthumbs.db
 *.log
 *.out
 
+# Node
+web/node_modules/
+web/.next/
+
 
 
 

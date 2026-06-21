@@ -52,6 +52,11 @@
   font-weight: 600;
 }
 
+.zcash-badge-user {
+  color: #b8c5bc;
+  font-size: 11px;
+}
+
 .zcash-badge-expires {
   color: #888;
   font-size: 11px;
