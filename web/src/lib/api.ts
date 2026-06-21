@@ -94,6 +94,17 @@ export async function checkHealth(): Promise<boolean> {
   }
 }
 
+export async function fetchChainHeight(): Promise<number | null> {
+  try {
+    const resp = await fetch("/api/chain-height");
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { height?: number };
+    return typeof data.height === "number" ? data.height : null;
+  } catch {
+    return null;
+  }
+}
+
 export function formatZec(zats: number): string {
   return `${(zats / 100_000_000).toFixed(8)} ZEC`;
 }

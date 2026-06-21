@@ -1,6 +1,6 @@
 # ZcashBadge
 
-Cryptographic proof-of-balance verification for Zcash. Users prove ownership of a Zcash wallet and register verified balance badges on social platforms (X, Zcash Forum, Bluesky). A Chrome extension displays these badges next to usernames.
+Cryptographic proof-of-balance verification for Zcash. Users prove ownership of an Orchard (shielded) wallet and register verified balance badges on social platforms (X, Zcash Forum, Bluesky). A Chrome extension reads badges from the server and displays them next to usernames.
 
 ## Showcase
 
@@ -16,99 +16,197 @@ Cryptographic proof-of-balance verification for Zcash. Users prove ownership of 
 ## Architecture
 
 ```
-verifier/         CLI tool — generates cryptographic proofs and submits them
-badge-server/     HTTP API — verifies proofs, stores badges in SQLite
-web/              Next.js app — web UI to generate proofs and register badges
-extension/        Chrome Extension (MV3) — injects badges on supported platforms
+verifier/         Rust CLI + library — Orchard scanning, proof generation, verification
+badge-server/     HTTP API on :3000 — generates/verifies proofs, stores badges in SQLite
+web/              Next.js app on :3001 — registration wizard (recommended UI)
+extension/        Chrome extension (MV3) — reads badges from DB, injects shields on social sites
 ```
 
-The system works in three steps:
+### How it works
 
-1. The web app (or CLI) scans the Zcash blockchain, generates a signed proof binding your balance to your social identity, and stores it in the badge server database.
-2. The badge server cryptographically verifies proofs and stores badge metadata in SQLite.
-3. The Chrome extension queries the server and displays a badge next to your username on supported platforms.
+1. **Register** — The web app (or CLI) scans your Orchard balance via lightwalletd, generates a signed proof bound to your social handles, and sends it to the badge server.
+2. **Verify & store** — The badge server cryptographically verifies each proof and upserts badge metadata into `badges.db`.
+3. **Display** — The Chrome extension queries the badge server and injects tier badges next to matching usernames on X, Bluesky, and Zcash Forum.
+
+No JSON upload is required in the extension. Badges are read from the database by `platform:username`.
 
 ## Prerequisites
 
 - Rust 1.75+ and Cargo
 - Node.js 18+ and npm (for the web app)
-- Google Chrome, Brave, or any Chromium supported browser (for the extension)
+- Google Chrome, Brave, or another Chromium browser (for the extension)
 
 ## Quick Start
 
-### 1. Build Deployments
+### 1. Build
+
+```bash
+cargo build
+```
+
+For optimized binaries:
 
 ```bash
 cargo build --release
 ```
 
-### 2. Start the Badge Server
+Binaries: `target/debug/verifier`, `target/debug/badge-server` (or under `target/release/`).
 
-We provide several convenient bash scripts in the root directory to manage the backend:
-
-- **`./start_server.sh`**: Starts the `badge-server` backend dynamically on `http://localhost:3000`.
-- **`./start_web.sh`**: Starts the Next.js web app on `http://localhost:3001`.
-- **`./kill_server.sh`**: Safely finds and forcefully terminates the background badge server.
-- **`./clean.sh`**: Stops the server and wipes `badges.db` clean to reset all registrations.
-
-Start your server to begin:
+Install web dependencies once:
 
 ```bash
-./start_server.sh
-./start_web.sh
+cd web && npm install
 ```
 
-### 3. Register Your Badge (Web App — Recommended)
+### 2. Start services
 
-Open **http://localhost:3001** and follow the wizard:
+Helper scripts in the repo root:
 
-1. Enter your seed phrase and scan start height
-2. Add your social handles (X, Bluesky, Zcash Forum)
-3. Click **Generate & register badges**
+| Script | Purpose |
+| ------ | ------- |
+| `./start_server.sh` | Badge server at `http://localhost:3000` |
+| `./start_web.sh` | Registration app at `http://localhost:3001` |
+| `./kill_server.sh` | Stop the badge server |
+| `./clean.sh` | Stop server and wipe `badges.db` |
 
-Your proof is verified and saved to the database automatically. No JSON upload required.
+```bash
+./start_server.sh   # terminal 1
+./start_web.sh      # terminal 2
+```
 
-Then open the Chrome extension → **Settings** → add your usernames under **My identities** → **Save & Refresh Badges**.
+### 3. Register your badge (web app — recommended)
 
-### 4. Register via CLI (Alternative)
+Open **http://localhost:3001** and complete the wizard:
 
-Use **`./prove_social.sh`** to automatically generate the proof _and_ explicitly register it across multiple platforms simultaneously.
-Edit the script to include your specific handles (e.g., `--x your_handle --bluesky your_handle`), and the CLI will securely submit it straight to the backend server and save a local backup to `zcashprovewithsocial.json`.
+1. **Wallet** — Enter your BIP39 seed phrase. Scan start height defaults to the current mainnet height (fetched from [Blockchair](https://api.blockchair.com/zcash/stats)). Lower it to the block **before** your first shielded receive so the scanner finds your balance.
+2. **Identity** — Add handles for X, Bluesky, and/or Zcash Forum (at least one).
+3. **Review** — Click **Generate & register badges**.
 
-_(Note: Ensure your `--start-height` in the bash scripts is set to a block right before your wallet was funded so the scanner successfully calculates your balance!)_
+Proofs are verified and saved to SQLite automatically. Your handles are synced to the Chrome extension when you visit the web app.
 
-### 5. Install the Chrome Extension
+> **Local dev only:** The web app sends your seed to your local badge server (`localhost:3000`) for proof generation. Do not expose this setup to the public internet without hardening it first.
 
-1. Open Chrome and navigate to `chrome://extensions`
-2. Enable "Developer mode" (toggle in the top right)
-3. Click "Load unpacked" and select the `extension/` directory
-4. The ZcashBadge icon will appear in your toolbar
+### 4. Install the Chrome extension
 
-The extension will automatically dynamically inject badges directly into X (Twitter), Bluesky, and Zcash Forum timelines.
+1. Open `chrome://extensions`
+2. Enable **Developer mode**
+3. Click **Load unpacked** and select the `extension/` directory
+4. Open the **ZcashBadge** popup — use **Open Registration App** if you still need to register
+
+After registration, reload social tabs (X, Bluesky, Forum). Badges appear next to verified usernames. Use **Refresh from server** in the popup to reload your own badges.
+
+### 5. Register via CLI (alternative)
+
+```bash
+cargo run -p zcash-verifier -- register \
+  --seed "your seed phrase" \
+  --x your_handle \
+  --bluesky your_handle.bsky.social \
+  --start-height 3295000
+```
+
+Or use the helper script (edit handles and start height first):
+
+```bash
+./prove_social.sh
+```
+
+Set `--start-height` to a block shortly **before** your wallet received its first shielded ZEC.
+
+## Deploy on Ubuntu (Cloudflare Tunnel)
+
+Expose the badge server and registration app publicly with a single script (uses **GNU screen** + Cloudflare quick tunnels):
+
+```bash
+chmod +x deployscript.sh
+./deployscript.sh
+```
+
+This will:
+
+1. Build and start **badge-server** in screen `zcashbadge-server` (port **3000**)
+2. Build and start the **web app** in screen `zcashbadge-web` (port **3001**)
+3. Expose the badge server via Cloudflare tunnel (for the Chrome extension)
+4. Expose the web app via Cloudflare tunnel (registration page)
+5. Print and save:
+
+```
+serverurlforextension: https://....trycloudflare.com
+webpage access:        https://....trycloudflare.com
+```
+
+URLs are saved to `.deploy/urls.env`.
+
+**Extension setup after deploy:**
+
+1. Copy `serverurlforextension` into ZcashBadge extension → **Settings** → **Badge Server URL**
+2. Open `webpage access` in a browser to register badges
+
+**Manage deploy:**
+
+```bash
+./deployscript.sh --status   # list screens + saved URLs
+screen -r zcashbadge-server  # attach to badge-server logs
+./deployscript.sh --stop       # stop everything
+```
+
+**Requirements on Ubuntu:** `curl`, `lsof`, Rust/Cargo, Node.js/npm, and [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
+
+Quick tunnel URLs change on each restart. For a stable domain, configure a named Cloudflare tunnel separately.
+
+## Badge Server API
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `POST` | `/api/register` | Scan wallet, generate proofs, verify, and store badges |
+| `POST` | `/api/scan` | Scan Orchard balance only (no registration) |
+| `POST` | `/api/verify` | Submit an existing proof JSON for verification |
+| `GET` | `/api/badges?platform=x&usernames=u1,u2` | Batch badge lookup |
+| `GET` | `/api/badge/{platform}/{username}` | Single badge lookup |
+| `GET` | `/api/health` | Health check |
+
+Valid platforms: `x`, `bluesky`, `zcashforum`
+
+The web app proxies `/api/register`, `/api/scan`, and `/api/health` through Next.js routes on port **3001**. Chain height for the wizard defaults comes from `/api/chain-height` (Blockchair).
+
+Environment:
+
+```bash
+DATABASE_URL=sqlite:badges.db cargo run -p badge-server
+```
 
 ## CLI Reference
 
-### register
-
-The recommended command for most users. Scans once, registers across all platforms.
+Run via Cargo:
 
 ```bash
-verifier register --seed "..." --x handle [--bluesky handle] ...
+cargo run -p zcash-verifier -- <command> [flags]
 ```
 
-| Flag               | Description                                         |
-| ------------------ | --------------------------------------------------- |
-| `--seed`           | BIP39 seed phrase (required)                        |
-| `--x`              | X / Twitter username                                |
-| `--bluesky`        | Bluesky handle                                      |
-| `--start-height`   | Block height to start scanning from                 |
-| `--network`        | `main` (default) or `test`                          |
-| `--server-url`     | Badge server URL (default: `http://localhost:3000`) |
-| `-o, --output-dir` | Where to save `zcash_proof.json` (default: `.`)     |
+Or use the built binary: `./target/debug/verifier`
+
+### register
+
+Scan once and register badges across platforms.
+
+```bash
+verifier register --seed "..." --x handle [--bluesky handle] [--zcashforum handle]
+```
+
+| Flag | Description |
+| ---- | ----------- |
+| `--seed` | BIP39 seed phrase (required) |
+| `--x` | X / Twitter username |
+| `--bluesky` | Bluesky handle |
+| `--zcashforum` | Zcash Forum username |
+| `--start-height` | Block height to start scanning from |
+| `--network` | `main` (default) or `test` |
+| `--server-url` | Badge server URL (default: `http://localhost:3000`) |
+| `-o, --output-dir` | Output directory for proof JSON (default: `.`) |
 
 ### prove
 
-Generate a proof for a single platform. Supports both transparent and Orchard addresses.
+Generate a proof for a single platform.
 
 ```bash
 verifier prove orchard --seed "..." --platform x --username handle
@@ -117,7 +215,7 @@ verifier prove transparent --secret-key <hex> --platform zcashforum --username h
 
 ### scan
 
-Check your balance without generating a proof.
+Check balance without generating a proof.
 
 ```bash
 verifier scan orchard --seed "..." --start-height 3295000
@@ -126,7 +224,7 @@ verifier scan transparent --secret-key <hex>
 
 ### verify
 
-Verify an existing proof file.
+Verify an existing proof file locally.
 
 ```bash
 verifier verify --proof zcash_proof.json
@@ -142,58 +240,61 @@ verifier submit --proof proof.json --platform x --username handle
 
 ## Badge Tiers
 
-| Tier     | Threshold         | Image                |
-| -------- | ----------------- | -------------------- |
-| Holder   | < 1 ZEC           | `badge_holder.png`   |
-| 10 ZEC   | >= 10 ZEC         | `badge_10zec.png`    |
-| 100 ZEC  | >= 100 ZEC        | `badge_100zec.png`   |
-| 1K ZEC   | >= 1,000 ZEC      | `badge_1k_zec.png`   |
-| 10K ZEC  | >= 10,000 ZEC     | `badge_10k_zec.png`  |
-| 100K ZEC | >= 100,000 ZEC    | `badge_100k_zec.png` |
-| 1M ZEC   | >= 1,000,000 ZEC  | `badge_1m_zec.png`   |
-| 10M ZEC  | >= 10,000,000 ZEC | `badge_10m_zec.png`  |
+| Tier | Threshold | Image |
+| ---- | --------- | ----- |
+| Holder | < 1 ZEC | `badge_holder.png` |
+| 10 ZEC | ≥ 10 ZEC | `badge_10zec.png` |
+| 100 ZEC | ≥ 100 ZEC | `badge_100zec.png` |
+| 1K ZEC | ≥ 1,000 ZEC | `badge_1k_zec.png` |
+| 10K ZEC | ≥ 10,000 ZEC | `badge_10k_zec.png` |
+| 100K ZEC | ≥ 100,000 ZEC | `badge_100k_zec.png` |
+| 1M ZEC | ≥ 1,000,000 ZEC | `badge_1m_zec.png` |
+| 10M ZEC | ≥ 10,000,000 ZEC | `badge_10m_zec.png` |
+
+Badge images are bundled in `extension/icons/badges/`.
 
 ## Security Model
 
-- **Cryptographic verification**: Every proof is verified against the Zcash blockchain. You cannot fake a proof without the wallet's private key.
-- **Challenge binding**: Each proof is bound to a specific `platform:username` pair. Proofs cannot be reused across different identities.
-- **Expiry**: Badges expire after 30 days and must be renewed.
-- **Your keys stay local**: The CLI generates proofs locally. Your seed phrase is never sent to the server.
+- **Cryptographic verification** — Proofs are verified against the Zcash blockchain via lightwalletd. You cannot forge a proof without the wallet's private key.
+- **Challenge binding** — Each proof is bound to a `platform:username` pair and cannot be reused across identities.
+- **Expiry** — Badges expire after 30 days and must be renewed.
+- **CLI** — The verifier CLI runs locally; your seed never leaves your machine unless you choose to use the web registration flow.
+- **Web app** — Sends your seed to your **local** badge server for scanning and proof generation. Intended for localhost development only.
 
 ## Database
 
-The badge server uses SQLite. The database file `badges.db` is created automatically on first run. To set up manually:
+SQLite database `badges.db` is created on first server run. Manual setup:
 
 ```bash
 sqlite3 badges.db < badge-server/migrations/001_init.sql
 ```
 
-To configure a custom database path:
+Schema key: `verified_badges(platform, username)` with full proof stored as JSON.
 
-```bash
-DATABASE_URL=sqlite:/path/to/badges.db cargo run -p badge-server
-```
+## Chrome Extension
 
-## Chrome Extension Features
+**ZcashBadge** (MV3) features:
 
-- Detects usernames on X (Twitter), Bluesky, and Zcash Forum
-- Injects badge images next to verified usernames
-- Hover tooltip shows badge tier and expiry
-- Popup allows uploading proof JSON directly and looking up any user
-- Configurable server URL
-- Works with dynamically loaded content (SPA support via MutationObserver)
+- Reads verified badges from the badge server (`/api/badges` batch lookup)
+- Injects badge shields next to usernames on X, Bluesky, and Zcash Forum
+- Hover tooltip shows tier, handle, and expiry
+- Popup: **My Badges**, **Lookup**, **Settings** (server URL only)
+- Auto-syncs identities from the web app via `sync.js` on `localhost:3001`
+- SPA support via `MutationObserver` + periodic rescan
+
+Configure the badge server URL in **Settings** (default: `http://localhost:3000`).
 
 ## Supported Platforms
 
-| Platform    | URL                              |
-| ----------- | -------------------------------- |
-| X (Twitter) | https://x.com                    |
-| Bluesky     | https://bsky.app                 |
+| Platform | URL |
+| -------- | --- |
+| X (Twitter) | https://x.com |
+| Bluesky | https://bsky.app |
 | Zcash Forum | https://forum.zcashcommunity.com |
 
 ## Misc
 
-zcash_prove.json is attached to show the sample basic json for the prove
+Sample proof JSON: `zcash_prove.json`
 
 ## License
 

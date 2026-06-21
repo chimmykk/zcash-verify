@@ -6,7 +6,8 @@
   "permissions": ["storage", "tabs"],
   "host_permissions": [
     "http://localhost:3000/*",
-    "http://localhost:3001/*"
+    "http://localhost:3001/*",
+    "https://*.trycloudflare.com/*"
   ],
   "icons": {
     "48": "icons/badges/badge_holder.png",
@@ -21,7 +22,8 @@
   "content_scripts": [
     {
       "matches": [
-        "http://localhost:3001/*"
+        "http://localhost:3001/*",
+        "https://*.trycloudflare.com/*"
       ],
       "js": ["sync.js"],
       "run_at": "document_idle"
