@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Badge,
-  fetchChainHeight,
   formatZec,
   registerBadges,
   scanBalance,
   ScanResponse,
 } from "@/lib/api";
+
+const DEFAULT_START_HEIGHT = "3385575";
 
 type Step = "wallet" | "identity" | "review" | "result";
 
@@ -43,8 +44,7 @@ const PLATFORMS = [
 export default function RegisterWizard() {
   const [step, setStep] = useState<Step>("wallet");
   const [seed, setSeed] = useState("");
-  const [startHeight, setStartHeight] = useState("");
-  const [heightLoading, setHeightLoading] = useState(true);
+  const [startHeight, setStartHeight] = useState(DEFAULT_START_HEIGHT);
   const [network, setNetwork] = useState("main");
   const [handles, setHandles] = useState({ x: "", bluesky: "", zcashforum: "" });
   const [scanResult, setScanResult] = useState<ScanResponse | null>(null);
@@ -61,25 +61,6 @@ export default function RegisterWizard() {
 
   const hasIdentity = Object.values(handles).some((h) => h.trim());
   const seedReady = wordCount === 12 || wordCount === 24;
-
-  useEffect(() => {
-    let active = true;
-
-    async function loadChainHeight() {
-      setHeightLoading(true);
-      const height = await fetchChainHeight();
-      if (!active) return;
-      if (height) {
-        setStartHeight(String(height));
-      }
-      setHeightLoading(false);
-    }
-
-    loadChainHeight();
-    return () => {
-      active = false;
-    };
-  }, []);
 
   async function runScan(): Promise<ScanResponse | null> {
     setError("");
@@ -250,13 +231,12 @@ export default function RegisterWizard() {
                   setScanResult(null);
                 }}
                 type="number"
-                placeholder={heightLoading ? "Loading current height..." : "1687104"}
-                disabled={heightLoading}
-                className="mt-2 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-white outline-none focus:border-emerald-500/50 disabled:opacity-60"
+                placeholder={DEFAULT_START_HEIGHT}
+                className="mt-2 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-white outline-none focus:border-emerald-500/50"
               />
               <span className="mt-1 block text-xs font-normal text-zinc-500">
-                Defaults to current mainnet height from Blockchair — lower this to
-                the block before your first shielded receive for balance scanning
+                Defaults to current mainnet height — lower this to the block before
+                your first shielded receive for balance scanning
               </span>
             </label>
             <label className="block text-sm font-medium text-zinc-300">
@@ -276,7 +256,7 @@ export default function RegisterWizard() {
             <button
               type="button"
               onClick={handleScan}
-              disabled={scanning || loading || !seedReady || heightLoading || !startHeight}
+              disabled={scanning || loading || !seedReady || !startHeight}
               className="rounded-xl border border-zinc-700 px-4 py-2.5 text-sm font-medium text-zinc-200 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {scanning ? "Scanning ZEC balance..." : "Scan balance"}
@@ -284,7 +264,7 @@ export default function RegisterWizard() {
             <button
               type="button"
               onClick={handleContinueFromWallet}
-              disabled={scanning || loading || !seedReady || heightLoading || !startHeight}
+              disabled={scanning || loading || !seedReady || !startHeight}
               className="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {scanning ? "Scanning..." : "Continue"}
@@ -440,7 +420,7 @@ export default function RegisterWizard() {
             <button
               type="button"
               onClick={handleRegister}
-              disabled={loading || heightLoading || !startHeight}
+              disabled={loading || !startHeight}
               className="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-black hover:bg-emerald-400 disabled:opacity-60"
             >
               {loading ? "Generating proof..." : "Generate & register badges"}
