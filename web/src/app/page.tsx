@@ -1,5 +1,6 @@
 import RegisterWizard from "@/components/RegisterWizard";
 import ServerStatus from "@/components/ServerStatus";
+import Link from "next/link";
 
 export default function Home() {
   return (
@@ -62,6 +63,12 @@ export default function Home() {
           ))}
         </section>
       </main>
+
+      <footer className="relative border-t border-zinc-800/80 px-6 py-6 text-center text-sm text-zinc-500">
+        <Link href="/privacy" className="transition hover:text-emerald-300">
+          Privacy Policy
+        </Link>
+      </footer>
     </div>
   );
 }
