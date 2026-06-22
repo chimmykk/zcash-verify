@@ -1,12 +1,13 @@
 #!/bin/bash
-# Deploy ZcashBadge on Ubuntu using GNU screen + Cloudflare quick tunnels.
+# Deploy ZcashBadge using GNU screen + Cloudflare quick tunnels.
+# Tested on Ubuntu Linux (primary) and macOS (local dev).
 #
 # Usage:
 #   ./deployscript.sh          Build, start screens, expose tunnels, print URLs
 #   ./deployscript.sh --stop   Stop all screens, services, and tunnels
 #   ./deployscript.sh --status Show running screen sessions and saved URLs
 #
-# Screen sessions created:
+# Screen sessions created (one instance each):
 #   zcashbadge-server       badge-server on :3000
 #   zcashbadge-web          Next.js app on :3001
 #   zcashbadge-tunnel-api   Cloudflare tunnel → badge-server (extension)
@@ -19,7 +20,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 DEPLOY_DIR="$ROOT/.deploy"
-PID_FILE="$DEPLOY_DIR/pids"
+LOCK_DIR="$DEPLOY_DIR/deploy.lock"
+LOCK_FILE="$DEPLOY_DIR/deploy.lockfile"
 URL_FILE="$DEPLOY_DIR/urls.env"
 LOG_DIR="$DEPLOY_DIR/logs"
 
@@ -48,21 +50,115 @@ screen_exists() {
   screen -list 2>/dev/null | grep -q "\.${1}[[:space:]]"
 }
 
+wait_screen_gone() {
+  local name=$1
+  local i
+  for i in $(seq 1 15); do
+    screen_exists "$name" || return 0
+    sleep 1
+  done
+  warn "Screen session $name did not exit cleanly; forcing quit"
+  screen -S "$name" -X quit 2>/dev/null || true
+  sleep 1
+}
+
 stop_screen() {
   local name=$1
   if screen_exists "$name"; then
     echo "  stopping screen: $name"
     screen -S "$name" -X quit 2>/dev/null || true
+    wait_screen_gone "$name"
   fi
+}
+
+# Port helpers work on Ubuntu (ss/lsof) and macOS (lsof).
+port_pids() {
+  local port=$1
+  local pids
+
+  pids=$(lsof -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    echo "$pids"
+    return 0
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    pids=$(ss -ltnp "sport = :$port" 2>/dev/null \
+      | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)
+    if [ -n "$pids" ]; then
+      echo "$pids"
+      return 0
+    fi
+  fi
+
+  lsof -t -i:"$port" 2>/dev/null || true
+}
+
+port_in_use() {
+  [ -n "$(port_pids "$1")" ]
+}
+
+port_listeners() {
+  local port=$1
+  if lsof -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | tail -n +2 | grep -q .; then
+    lsof -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | tail -n +2
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :$port" 2>/dev/null || true
+    return 0
+  fi
+  lsof -i:"$port" 2>/dev/null | tail -n +2 || true
+}
+
+wait_port_free() {
+  local port=$1
+  local label=${2:-"port $port"}
+  local i
+  for i in $(seq 1 30); do
+    port_in_use "$port" || return 0
+    sleep 1
+  done
+  err "$label (port $port) is still in use"
+  port_listeners "$port" || true
+  return 1
 }
 
 kill_port() {
   local port=$1
+  local pid
   local pids
-  pids=$(lsof -t -i:"$port" 2>/dev/null || true)
-  if [ -n "$pids" ]; then
-    kill -9 $pids 2>/dev/null || true
-  fi
+  pids=$(port_pids "$port")
+  [ -z "$pids" ] && return 0
+
+  echo "  freeing port $port (PIDs: $(echo "$pids" | tr '\n' ' '))"
+  while read -r pid; do
+    [ -z "$pid" ] && continue
+    kill "$pid" 2>/dev/null || true
+  done <<< "$pids"
+
+  sleep 2
+
+  pids=$(port_pids "$port")
+  [ -z "$pids" ] && return 0
+
+  while read -r pid; do
+    [ -z "$pid" ] && continue
+    kill -9 "$pid" 2>/dev/null || true
+  done <<< "$pids"
+
+  wait_port_free "$port" "port $port"
+}
+
+kill_stray_processes() {
+  # Stop dev/manual runs that are not managed by our screen sessions.
+  pkill -f "target/release/badge-server" 2>/dev/null || true
+  pkill -f "target/debug/badge-server" 2>/dev/null || true
+  pkill -f "cargo run -p badge-server" 2>/dev/null || true
+  pkill -f "next dev -p $WEB_PORT" 2>/dev/null || true
+  pkill -f "next start" 2>/dev/null || true
+  pkill -f "cloudflared tunnel --url http://127.0.0.1:$BADGE_PORT" 2>/dev/null || true
+  pkill -f "cloudflared tunnel --url http://127.0.0.1:$WEB_PORT" 2>/dev/null || true
 }
 
 stop_all() {
@@ -73,20 +169,11 @@ stop_all() {
   stop_screen "$SCREEN_WEB"
   stop_screen "$SCREEN_SERVER"
 
-  if [ -f "$PID_FILE" ]; then
-    while read -r pid name; do
-      [ -z "${pid:-}" ] && continue
-      if kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null || true
-      fi
-    done < "$PID_FILE"
-    rm -f "$PID_FILE"
-  fi
+  kill_stray_processes
+  sleep 1
 
   kill_port "$BADGE_PORT"
   kill_port "$WEB_PORT"
-  pkill -f "cloudflared tunnel --url http://127.0.0.1:$BADGE_PORT" 2>/dev/null || true
-  pkill -f "cloudflared tunnel --url http://127.0.0.1:$WEB_PORT" 2>/dev/null || true
 
   log "Stopped."
 }
@@ -96,6 +183,7 @@ start_screen() {
   local cmd=$2
   stop_screen "$name"
   screen -dmS "$name" bash -lc "$cmd"
+  sleep 1
   if ! screen_exists "$name"; then
     err "Failed to start screen session: $name"
     exit 1
@@ -125,7 +213,7 @@ wait_for_tunnel_url() {
   local i
   for i in $(seq 1 120); do
     local url
-    url=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$logfile" 2>/dev/null | head -1 || true)
+    url=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$logfile" 2>/dev/null | tail -1 || true)
     if [ -n "$url" ]; then
       echo "$url"
       return 0
@@ -138,7 +226,12 @@ wait_for_tunnel_url() {
 
 install_cloudflared_hint() {
   cat <<'EOF'
-Install cloudflared on Ubuntu:
+Install dependencies on Ubuntu:
+
+  sudo apt update
+  sudo apt install -y curl lsof screen build-essential
+
+Install cloudflared:
 
   curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
     -o /tmp/cloudflared
@@ -152,12 +245,68 @@ show_status() {
   echo "Screen sessions:"
   screen -list 2>/dev/null || echo "  (none)"
   echo ""
+  echo "Port listeners:"
+  for port in "$BADGE_PORT" "$WEB_PORT"; do
+    if port_in_use "$port"; then
+      echo "  :$port in use:"
+      port_listeners "$port" | sed 's/^/    /'
+    else
+      echo "  :$port free"
+    fi
+  done
+  echo ""
   if [ -f "$URL_FILE" ]; then
     echo "Saved URLs ($URL_FILE):"
     cat "$URL_FILE"
   else
     echo "No saved URLs yet. Run ./deployscript.sh first."
   fi
+}
+
+USE_FLOCK_LOCK=0
+
+acquire_deploy_lock() {
+  # Ubuntu: flock (util-linux). macOS: mkdir + PID file fallback.
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+      err "Another deploy is already running"
+      err "Wait for it to finish or run: ./deployscript.sh --stop"
+      exit 1
+    fi
+    USE_FLOCK_LOCK=1
+    return 0
+  fi
+
+  if [ -d "$LOCK_DIR" ]; then
+    local old_pid
+    old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+      err "Another deploy is already running (PID $old_pid)"
+      err "Wait for it to finish or run: ./deployscript.sh --stop"
+      exit 1
+    fi
+    warn "Removing stale deploy lock"
+    rm -rf "$LOCK_DIR"
+  fi
+
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    err "Another deploy is already running (lock: $LOCK_DIR)"
+    err "Wait for it to finish or run: ./deployscript.sh --stop"
+    exit 1
+  fi
+  echo "$$" > "$LOCK_DIR/pid"
+}
+
+release_deploy_lock() {
+  [ "$USE_FLOCK_LOCK" = 1 ] && return 0
+  rm -rf "$LOCK_DIR"
+}
+
+with_deploy_lock() {
+  acquire_deploy_lock
+  trap release_deploy_lock EXIT
+  "$@"
 }
 
 start_stack() {
@@ -172,7 +321,6 @@ start_stack() {
   }
 
   stop_all
-  : > "$PID_FILE"
   : > "$LOG_DIR/badge-server.log"
   : > "$LOG_DIR/web.log"
   : > "$LOG_DIR/tunnel-api.log"
@@ -192,7 +340,8 @@ start_stack() {
     npm run build
   )
 
-  log "Starting badge-server in screen ($SCREEN_SERVER)..."
+  log "Starting badge-server (1/4) in screen ($SCREEN_SERVER)..."
+  wait_port_free "$BADGE_PORT" "badge-server port"
   start_screen "$SCREEN_SERVER" "
     cd '$ROOT' && \
     export RUST_LOG='${RUST_LOG:-badge_server=info}' && \
@@ -201,7 +350,8 @@ start_stack() {
   "
   wait_for_local "http://127.0.0.1:$BADGE_PORT/api/health" "Badge server" "$LOG_DIR/badge-server.log"
 
-  log "Starting web app in screen ($SCREEN_WEB)..."
+  log "Starting web app (2/4) in screen ($SCREEN_WEB)..."
+  wait_port_free "$WEB_PORT" "web app port"
   start_screen "$SCREEN_WEB" "
     cd '$ROOT/web' && \
     export PORT='$WEB_PORT' && \
@@ -211,18 +361,19 @@ start_stack() {
   "
   wait_for_local "http://127.0.0.1:$WEB_PORT/api/health" "Web app" "$LOG_DIR/web.log"
 
-  log "Starting Cloudflare tunnel for badge-server in screen ($SCREEN_TUNNEL_API)..."
+  log "Starting Cloudflare tunnel for badge-server (3/4) in screen ($SCREEN_TUNNEL_API)..."
   start_screen "$SCREEN_TUNNEL_API" "
     exec cloudflared tunnel --no-autoupdate --url 'http://127.0.0.1:$BADGE_PORT' 2>&1 | tee -a '$LOG_DIR/tunnel-api.log'
   "
+  API_PUBLIC_URL=$(wait_for_tunnel_url "$LOG_DIR/tunnel-api.log")
+  log "API tunnel ready: $API_PUBLIC_URL"
 
-  log "Starting Cloudflare tunnel for web app in screen ($SCREEN_TUNNEL_WEB)..."
+  log "Starting Cloudflare tunnel for web app (4/4) in screen ($SCREEN_TUNNEL_WEB)..."
   start_screen "$SCREEN_TUNNEL_WEB" "
     exec cloudflared tunnel --no-autoupdate --url 'http://127.0.0.1:$WEB_PORT' 2>&1 | tee -a '$LOG_DIR/tunnel-web.log'
   "
-
-  API_PUBLIC_URL=$(wait_for_tunnel_url "$LOG_DIR/tunnel-api.log")
   WEB_PUBLIC_URL=$(wait_for_tunnel_url "$LOG_DIR/tunnel-web.log")
+  log "Web tunnel ready: $WEB_PUBLIC_URL"
 
   cat > "$URL_FILE" <<EOF
 # Generated by deployscript.sh — $(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -267,6 +418,7 @@ EOF
 case "${1:-}" in
   --stop|stop)
     stop_all
+    release_deploy_lock 2>/dev/null || true
     ;;
   --status|status)
     show_status
@@ -275,6 +427,6 @@ case "${1:-}" in
     sed -n '1,18p' "$0"
     ;;
   *)
-    start_stack
+    with_deploy_lock start_stack
     ;;
 esac
